@@ -138,7 +138,6 @@ func TestInvalidGroupName(t *testing.T) {
 
 	const (
 		base                  = ownerName + "/group-badname-test"
-		file                  = base + "/test"
 		ownerGroup            = ownerName + "/Group"
 		ownerGroupBad         = ownerGroup + "/**"
 		ownerGroupBadContents = "ann@example.com"
@@ -156,7 +155,7 @@ func TestInvalidGroupName(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error putting Group file, got none")
 	}
-	if !errors.Match(errors.E(errors.Invalid), err) {
+	if !errors.Is(errors.Invalid, err) {
 		t.Fatal(err)
 	}
 }

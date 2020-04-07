@@ -56,6 +56,20 @@ func (s *State) list(entry *upspin.DirEntry, done map[upspin.PathName]bool, long
 		dirContents = []*upspin.DirEntry{entry}
 	}
 
+	// Glob doesn't follow the final link. We may have to do so ourselves.
+	if followLinks {
+		for i, entry := range dirContents {
+			if entry.IsLink() {
+				e, err := s.Client.Lookup(entry.Link, false)
+				if err != nil {
+					s.Fail(err)
+					continue
+				}
+				dirContents[i] = e
+			}
+		}
+	}
+
 	if longFormat {
 		s.printLongDirEntries(dirContents)
 	} else {
@@ -79,9 +93,10 @@ func hasFinalSlash(name upspin.PathName) bool {
 
 func (s *State) printShortDirEntries(de []*upspin.DirEntry) {
 	for _, e := range de {
-		if e.IsDir() && !hasFinalSlash(e.Name) {
+		switch {
+		case e.IsDir() && !hasFinalSlash(e.Name):
 			s.Printf("%s/\n", e.Name)
-		} else {
+		default:
 			s.Printf("%s\n", e.Name)
 		}
 	}
@@ -91,7 +106,7 @@ func (s *State) printLongDirEntries(de []*upspin.DirEntry) {
 	seqWidth := 2
 	sizeWidth := 2
 	for _, e := range de {
-		str := fmt.Sprintf("%d", upspin.SeqVersion(e.Sequence))
+		str := fmt.Sprintf("%d", e.Sequence)
 		if seqWidth < len(str) {
 			seqWidth = len(str)
 		}
@@ -134,7 +149,7 @@ func (s *State) printLongDirEntries(de []*upspin.DirEntry) {
 		s.Printf("%c %-6s %*d %*d %s [%s]\t%s%s\n",
 			attrChar,
 			packStr,
-			seqWidth, upspin.SeqVersion(e.Sequence),
+			seqWidth, e.Sequence,
 			sizeWidth, s.sizeOf(e),
 			e.Time.Go().Local().Format("Mon Jan _2 15:04:05"),
 			endpt,
@@ -146,7 +161,7 @@ func (s *State) printLongDirEntries(de []*upspin.DirEntry) {
 func (s *State) sizeOf(e *upspin.DirEntry) int64 {
 	size, err := e.Size()
 	if err != nil {
-		fmt.Fprintf(s.stderr, "%q: %s\n", e.Name, err)
+		fmt.Fprintf(s.Stderr, "%q: %s\n", e.Name, err)
 	}
 	return size
 }

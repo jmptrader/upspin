@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"upspin.io/cloud/storage"
 	"upspin.io/cloud/storage/disk/internal/local"
@@ -20,11 +21,11 @@ import (
 // options. The single, required option is "basePath" that must be an absolute
 // path under which all objects should be stored.
 func New(opts *storage.Opts) (storage.Storage, error) {
-	const op = "cloud/storage/disk.New"
+	const op errors.Op = "cloud/storage/disk.New"
 
 	base, ok := opts.Opts["basePath"]
 	if !ok {
-		return nil, errors.E(op, errors.Str("the basePath option must be specified"))
+		return nil, errors.E(op, "the basePath option must be specified")
 	}
 	if err := os.MkdirAll(base, 0700); err != nil {
 		return nil, errors.E(op, errors.IO, err)
@@ -94,28 +95,31 @@ type storageImpl struct {
 	base string
 }
 
-var _ storage.Storage = (*storageImpl)(nil)
+var (
+	_ storage.Storage = (*storageImpl)(nil)
+	_ storage.Lister  = (*storageImpl)(nil)
+)
 
-// LinkBase implements Storage.
+// LinkBase implements storage.Storage.
 func (s *storageImpl) LinkBase() (base string, err error) {
 	return "", upspin.ErrNotSupported
 }
 
-// Download implements Storage.
+// Download implements storage.Storage.
 func (s *storageImpl) Download(ref string) ([]byte, error) {
-	const op = "cloud/storage/disk.Download"
+	const op errors.Op = "cloud/storage/disk.Download"
 	b, err := ioutil.ReadFile(s.path(ref))
 	if os.IsNotExist(err) {
 		return nil, errors.E(op, errors.NotExist, errors.Str(ref))
 	} else if err != nil {
-		return nil, errors.E(op, errors.IO, errors.Str(ref))
+		return nil, errors.E(op, errors.IO, err)
 	}
 	return b, nil
 }
 
-// Put implements Storage.
+// Put implements storage.Storage.
 func (s *storageImpl) Put(ref string, contents []byte) error {
-	const op = "cloud/storage/disk.Put"
+	const op errors.Op = "cloud/storage/disk.Put"
 	p := s.path(ref)
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return errors.E(op, errors.IO, err)
@@ -126,15 +130,73 @@ func (s *storageImpl) Put(ref string, contents []byte) error {
 	return nil
 }
 
-// Delete implements Storage.
+// Delete implements storage.Storage.
 func (s *storageImpl) Delete(ref string) error {
-	const op = "cloud/storage/disk.Delete"
+	const op errors.Op = "cloud/storage/disk.Delete"
 	if err := os.Remove(s.path(ref)); os.IsNotExist(err) {
 		return errors.E(op, errors.NotExist, errors.Str(ref))
 	} else if err != nil {
-		return errors.E(op, errors.IO, errors.Str(ref))
+		return errors.E(op, errors.IO, err)
 	}
 	return nil
+}
+
+var maxRefsPerCall = 1000 // A variable so that it may be overridden by tests.
+
+// List implements storage.Lister.
+func (s *storageImpl) List(token string) (refs []upspin.ListRefsItem, next string, err error) {
+	const op errors.Op = "cloud/storage/disk.List"
+	err = filepath.Walk(s.base, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Convert path into its base path.
+		path = strings.TrimPrefix(strings.TrimPrefix(path, s.base), string(filepath.Separator))
+
+		// Ignore the root.
+		if path == "" {
+			return nil
+		}
+
+		// Stop walking when we've gathered enough refs.
+		if len(refs) >= maxRefsPerCall {
+			if next == "" {
+				next = path
+			}
+			return filepath.SkipDir
+		}
+
+		// Don't process paths that come before our pagination token.
+		if path < token {
+			if fi.IsDir() && !strings.HasPrefix(token, path) {
+				// Don't descend into irrelevant directories.
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if fi.IsDir() {
+			// Nothing more to do for directories.
+			return nil
+		}
+
+		// Convert the file path into its reference name
+		// and append it to refs.
+		ref, err := local.Ref(path)
+		if err != nil {
+			return err
+		}
+		refs = append(refs, upspin.ListRefsItem{
+			Ref:  upspin.Reference(ref),
+			Size: fi.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, "", errors.E(op, err)
+	}
+	return refs, next, nil
 }
 
 // path returns the absolute path that should contain ref.
